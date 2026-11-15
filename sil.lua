@@ -71,10 +71,10 @@ end
 -- ============================================================
 local State = {
     collectOn    = false,
-    collectInt   = 1,
-    collectBurst = 1,
-    burstLoop    = 1,
-    fireGap      = 1,
+    collectInt   = 0.5,
+    collectBurst = 3,
+    burstLoop    = 3,
+    fireGap      = 0.2,
     parallelOn   = true,
     collectCnt   = 0,
     collectFail  = 0,
