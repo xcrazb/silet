@@ -1,5 +1,5 @@
 -- ============================================================
---  ULTRA FISH FARMER - BALANCED EDITION (ANTI-LAG & CEPAT)
+--  ULTRA FISH FARMER - MINIMALIST EDITION (+ AUTO FEEDER 5 MIN)
 -- ============================================================
 
 local Players           = game:GetService("Players")
@@ -67,16 +67,15 @@ local function fetchCurrentPondBaits(onlyWithFish)
 end
 
 -- ============================================================
---  STATE (Dioptimalkan dengan Sweet Spot)
+--  STATE
 -- ============================================================
 local State = {
     collectOn    = false,
-    -- TWEAK: Jeda dibuat pas, tidak terlalu cepat, tidak terlalu lambat
-    collectInt   = 0.1,   -- Jeda antar putaran ambil ikan
-    collectBurst = 1,     
-    burstLoop    = 1,     
-    fireGap      = 0.12,  -- Jeda tembak remote (kunci anti-ping meledak)
-    parallelOn   = true,  -- Tetap nyalakan parallel agar ngebut
+    collectInt   = 1,
+    collectBurst = 1,
+    burstLoop    = 1,
+    fireGap      = 1,
+    parallelOn   = true,
     collectCnt   = 0,
     collectFail  = 0,
     sellOn       = false,
@@ -84,12 +83,12 @@ local State = {
     baitList     = {},
     lastCycleMs  = 0,
     
-    feederOn     = false,
-    foodTrayOn   = false,
+    feederOn     = false,  -- State untuk Feeder
+    foodTrayOn   = false,  -- State untuk Food Tray
 }
 
 -- ============================================================
---  ANTI AFK
+--  ANTI AFK (OTOMATIS JALAN)
 -- ============================================================
 local AntiAfk = { running = false }
 local function fireAntiAfk()
@@ -117,45 +116,55 @@ end
 task.spawn(startAntiAfk)
 
 -- ============================================================
---  AUTO PLACE (Dengan jeda aman)
+--  AUTO PLACE FEEDER (5 MENIT LOOP)
 -- ============================================================
 local function startAutoFeederLoop()
     task.spawn(function()
         while State.feederOn do
+            -- Place 10 di Kiri
             for i = 1, 10 do
                 if not State.feederOn then break end
                 pcall(function()
                     placeBuildingRemote:InvokeServer("booster", "GodlyAutoFeeder", Vector3.new(75.86299896240234, -0.012000083923339844, 41))
                 end)
-                task.wait(0.15) -- Jeda sedikit lebih lama dari aslinya
+                task.wait(0.1)
             end
+            
+            -- Place 10 di Kanan
             for i = 1, 10 do
                 if not State.feederOn then break end
                 pcall(function()
                     placeBuildingRemote:InvokeServer("booster", "GodlyAutoFeeder", Vector3.new(75.86299896240234, -0.012000083923339844, -41))
                 end)
-                task.wait(0.15)
+                task.wait(0.1)
             end
-            if State.feederOn then task.wait(300) end
+            
+            -- Jeda 5 Menit (300 Detik)
+            if State.feederOn then
+                task.wait(300)
+            end
         end
     end)
 end
 
+-- ============================================================
+--  AUTO PLACE SUPREME FOOD TRAY (1 MENIT LOOP)
+-- ============================================================
 local function startAutoFoodTrayLoop()
     task.spawn(function()
         while State.foodTrayOn do
             pcall(function()
                 placeBuildingRemote:InvokeServer("booster", "SupremeFoodTray", Vector3.new(9.862998962402344, -0.012000083923339844, -10))
             end)
-            task.wait(60)
+            task.wait(60) -- Jeda 1 Menit (60 Detik)
         end
     end)
 end
 
 -- ============================================================
---  COLLECT & INSTANT SELL (BALANCED LOGIC)
+--  COLLECT & INSTANT SELL
 -- ============================================================
-local function fireBaitBalanced(baitId)
+local function fireBaitBrutal(baitId)
     for l = 1, State.burstLoop do
         if not State.collectOn then break end
         for b = 1, State.collectBurst do
@@ -176,32 +185,31 @@ local function fireBaitBalanced(baitId)
                 State.sellCnt += 1
             end
 
-            -- Jeda antar remote (0.12 detik sudah sangat aman untuk server)
             task.wait(State.fireGap)
         end
         task.wait(0.01)
     end
 end
 
-local function collectLoopBalanced()
+local function collectLoopBrutal()
     while State.collectOn do
         local t0 = os.clock()
         local baits = fetchCurrentPondBaits(true)
         State.baitList = baits
 
         if #baits == 0 then
-            task.wait(0.3)
+            task.wait(0.5)
         elseif State.parallelOn then
             local threads = {}
             for _, b in ipairs(baits) do
                 if not State.collectOn then break end
                 threads[#threads + 1] = task.spawn(function()
-                    fireBaitBalanced(b.id)
+                    fireBaitBrutal(b.id)
                 end)
-                task.wait(0.02) -- Jeda spawn antar bait
+                task.wait(0.005)
             end
             local waited = 0
-            while waited < 2 do
+            while waited < 3 do
                 local alive = false
                 for _, th in ipairs(threads) do
                     if coroutine.status(th) ~= "dead" then alive = true; break end
@@ -213,8 +221,8 @@ local function collectLoopBalanced()
         else
             for _, b in ipairs(baits) do
                 if not State.collectOn then break end
-                fireBaitBalanced(b.id)
-                task.wait(0.02)
+                fireBaitBrutal(b.id)
+                task.wait(0.005)
             end
         end
 
@@ -224,7 +232,7 @@ local function collectLoopBalanced()
 end
 
 -- ============================================================
---  SUPER EXTRA FPS BOOST (Sama seperti aslinya)
+--  SUPER EXTRA FPS BOOST
 -- ============================================================
 local FPS = {
     active = false, hidden = {}, materials = {}, sounds = {},
@@ -444,7 +452,7 @@ local function showFish()
 end
 
 -- ============================================================
---  GUI THEME & CREATION (Sama seperti aslinya)
+--  GUI THEME
 -- ============================================================
 local C = {
     Bg = Color3.fromRGB(10, 10, 16), Panel = Color3.fromRGB(20, 20, 32),
@@ -467,6 +475,7 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.DisplayOrder = 999
 ScreenGui.Parent = player:WaitForChild("PlayerGui")
 
+-- MAIN GUI
 local Main = Instance.new("Frame")
 Main.Size = UDim2.new(0, 340, 0, 0); Main.Position = UDim2.new(0, 20, 0, 20)
 Main.BackgroundColor3 = C.Bg; Main.BorderSizePixel = 0; Main.ClipsDescendants = true
@@ -475,19 +484,20 @@ Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 16)
 local ms = Instance.new("UIStroke", Main)
 ms.Color = C.Stroke; ms.Thickness = 1.5; ms.Transparency = 0.25
 
+-- TOPBAR
 local TopBar = Instance.new("Frame")
 TopBar.Size = UDim2.new(1, 0, 0, 54); TopBar.BackgroundColor3 = C.Panel; TopBar.BorderSizePixel = 0; TopBar.Parent = Main
 Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 16)
 
 local Title = Instance.new("TextLabel", TopBar)
 Title.Size = UDim2.new(1, -100, 0, 22); Title.Position = UDim2.new(0, 16, 0, 8)
-Title.BackgroundTransparency = 1; Title.Text = "⚡ ULTRA FARMER (BALANCED)"
+Title.BackgroundTransparency = 1; Title.Text = "⚡ ULTRA FARMER"
 Title.TextColor3 = C.Text; Title.Font = Enum.Font.GothamBlack; Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
 
 local Subtitle = Instance.new("TextLabel", TopBar)
 Subtitle.Size = UDim2.new(1, -100, 0, 14); Subtitle.Position = UDim2.new(0, 16, 0, 32)
-Subtitle.BackgroundTransparency = 1; Subtitle.Text = "Fast & Low Ping Edition"
+Subtitle.BackgroundTransparency = 1; Subtitle.Text = "Auto Feeder 5m Included"
 Subtitle.TextColor3 = C.Sub; Subtitle.Font = Enum.Font.GothamBold; Subtitle.TextSize = 10
 Subtitle.TextXAlignment = Enum.TextXAlignment.Left
 
@@ -503,12 +513,16 @@ MinBtn.BackgroundColor3 = C.Element; MinBtn.Text = "—"; MinBtn.TextColor3 = C.
 MinBtn.Font = Enum.Font.GothamBold; MinBtn.TextSize = 14; MinBtn.BorderSizePixel = 0; MinBtn.AutoButtonColor = false
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(1, 0)
 
+-- BODY
 local Body = Instance.new("Frame")
 Body.Size = UDim2.new(1, -20, 0, 0); Body.Position = UDim2.new(0, 10, 0, 62)
 Body.BackgroundTransparency = 1; Body.Parent = Main
 local BodyLayout = Instance.new("UIListLayout", Body)
 BodyLayout.Padding = UDim.new(0, 8); BodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
+-- ============================================================
+--  SIMPLE ELEMENT CREATOR
+-- ============================================================
 local order = 0
 local function nextOrder() order += 1; return order end
 
@@ -566,12 +580,15 @@ local function makeStatus(height)
     return l
 end
 
+-- ============================================================
+--  ISI GUI (CUMA TOGGLE)
+-- ============================================================
 makeSection("Control Panel")
 
 local toggleCollect = makeToggle("Auto Collect & Insta-Sell", false, function(v)
     State.collectOn = v
     State.sellOn = v 
-    if v then task.spawn(collectLoopBalanced) end -- Menggunakan fungsi Balanced
+    if v then task.spawn(collectLoopBrutal) end
 end)
 
 local toggleFeeder = makeToggle("Auto Place Feeder (5m)", false, function(v)
@@ -596,34 +613,43 @@ end)
 
 local statusLabel = makeStatus(70)
 
--- AUTO ENABLE
+-- ============================================================
+--  AUTO ENABLE ALL TOGGLES ON EXECUTE  -- [BARU]
+-- ============================================================
 task.spawn(function()
-    task.wait(0.5)
+    task.wait(0.5) -- tunggu GUI siap
 
+    -- 1. Auto Collect & Insta-Sell
     toggleCollect.Set(true)
     State.collectOn = true
     State.sellOn = true
-    task.spawn(collectLoopBalanced) 
+    task.spawn(collectLoopBrutal)
 
     task.wait(0.1)
 
+    -- 2. Auto Place Feeder (5m)
     toggleFeeder.Set(true)
     State.feederOn = true
     startAutoFeederLoop()
 
     task.wait(0.1)
 
+    -- 3. Auto Place Food Tray (1m)
     toggleFoodTray.Set(true)
     State.foodTrayOn = true
     startAutoFoodTrayLoop()
 
     task.wait(0.1)
 
+    -- 4. Ultra FPS Boost & Hide Fish
     toggleFPS.Set(true)
     boostFPS()
     hideFish()
 end)
 
+-- ============================================================
+--  LOOP UI & FPS COUNTER
+-- ============================================================
 local fpsFrames, fpsTime = 0, os.clock()
 RunService.RenderStepped:Connect(function()
     fpsFrames += 1
@@ -639,16 +665,19 @@ end)
 task.spawn(function()
     while ScreenGui.Parent do
         statusLabel.Text = string.format(
-            "Collected: %d | Sold: %d\nFeeder: %s | FoodTray: %s | FPS: %s",
+            "Collected: %d | Sold: %d\nFeeder: %s | FoodTray: %s | FPS Boost: %s",
             State.collectCnt, State.sellCnt,
-            State.feederOn and "ON" or "OFF",
-            State.foodTrayOn and "ON" or "OFF",
+            State.feederOn and "ACTIVE" or "OFF",
+            State.foodTrayOn and "ACTIVE" or "OFF",
             FPS.active and "ON" or "OFF"
         )
-        task.wait(0.5) -- UI update 0.5 detik
+        task.wait(0.4)
     end
 end)
 
+-- ============================================================
+--  DRAG + MINIMIZE
+-- ============================================================
 local dragging, dragStart, startPos
 TopBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
