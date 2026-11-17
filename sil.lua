@@ -1,5 +1,6 @@
 -- ============================================================
---  ULTRA FISH FARMER - MINIMALIST EDITION (+ AUTO FEEDER 5 MIN)
+--  ULTRA FISH FARMER - BRUTAL + AUTO-SELL 1s EDITION
+--  + AUTO FEEDER 5M + FOOD TRAY 1M + STORM HORN 3M
 -- ============================================================
 
 local Players           = game:GetService("Players")
@@ -28,6 +29,7 @@ local container = ReplicatedStorage
 local collectAllFishRemote = container:WaitForChild("bait.collectAllFish")
 local sellAllFishRemote    = container:WaitForChild("sellFish.sellAllFish")
 local placeBuildingRemote  = container:WaitForChild("ponds.placeBuilding")
+local stormHornRemote      = container:WaitForChild("gear.useStormHorn", 10)
 
 -- ============================================================
 --  PLAYER DATA
@@ -71,11 +73,11 @@ end
 -- ============================================================
 local State = {
     collectOn    = false,
-    collectInt   = 1,
-    collectBurst = 1,
-    burstLoop    = 1,
-    fireGap      = 1,
-    parallelOn   = true,
+    collectInt   = 0.1,   -- Jeda antar cycle (super cepat)
+    collectBurst = 2,     -- Burst per bait
+    burstLoop    = 2,     -- Loop burst
+    fireGap      = 0.05,  -- Jeda antar fire remote (kilat)
+    parallelOn   = true,  -- Multi-thread (brutal)
     collectCnt   = 0,
     collectFail  = 0,
     sellOn       = false,
@@ -83,12 +85,13 @@ local State = {
     baitList     = {},
     lastCycleMs  = 0,
     
-    feederOn     = false,  -- State untuk Feeder
-    foodTrayOn   = false,  -- State untuk Food Tray
+    feederOn     = false,
+    foodTrayOn   = false,
+    stormHornOn  = false,
 }
 
 -- ============================================================
---  ANTI AFK (OTOMATIS JALAN)
+--  ANTI AFK
 -- ============================================================
 local AntiAfk = { running = false }
 local function fireAntiAfk()
@@ -121,7 +124,6 @@ task.spawn(startAntiAfk)
 local function startAutoFeederLoop()
     task.spawn(function()
         while State.feederOn do
-            -- Place 10 di Kiri
             for i = 1, 10 do
                 if not State.feederOn then break end
                 pcall(function()
@@ -129,8 +131,6 @@ local function startAutoFeederLoop()
                 end)
                 task.wait(0.1)
             end
-            
-            -- Place 10 di Kanan
             for i = 1, 10 do
                 if not State.feederOn then break end
                 pcall(function()
@@ -138,11 +138,7 @@ local function startAutoFeederLoop()
                 end)
                 task.wait(0.1)
             end
-            
-            -- Jeda 5 Menit (300 Detik)
-            if State.feederOn then
-                task.wait(300)
-            end
+            if State.feederOn then task.wait(300) end
         end
     end)
 end
@@ -156,13 +152,29 @@ local function startAutoFoodTrayLoop()
             pcall(function()
                 placeBuildingRemote:InvokeServer("booster", "SupremeFoodTray", Vector3.new(9.862998962402344, -0.012000083923339844, -10))
             end)
-            task.wait(60) -- Jeda 1 Menit (60 Detik)
+            task.wait(60)
         end
     end)
 end
 
 -- ============================================================
---  COLLECT & INSTANT SELL
+--  AUTO STORM HORN (3 MENIT LOOP)
+-- ============================================================
+local function startAutoStormHornLoop()
+    task.spawn(function()
+        while State.stormHornOn do
+            if stormHornRemote then
+                pcall(function()
+                    stormHornRemote:FireServer("StormHorn")
+                end)
+            end
+            if State.stormHornOn then task.wait(180) end
+        end
+    end)
+end
+
+-- ============================================================
+--  COLLECT BRUTAL MURNI (TANPA JEDA SELL DI DALAM)
 -- ============================================================
 local function fireBaitBrutal(baitId)
     for l = 1, State.burstLoop do
@@ -180,11 +192,6 @@ local function fireBaitBrutal(baitId)
                 State.collectFail += 1
             end
             
-            if State.sellOn then
-                pcall(function() sellAllFishRemote:FireServer() end)
-                State.sellCnt += 1
-            end
-
             task.wait(State.fireGap)
         end
         task.wait(0.01)
@@ -226,9 +233,33 @@ local function collectLoopBrutal()
             end
         end
 
+        -- ✅ ANTI-MACET: Paksa sell kalau gagal collect berkali-kali
+        if State.sellOn and State.collectFail >= 3 then
+            pcall(function() sellAllFishRemote:FireServer() end)
+            State.sellCnt += 1
+            State.collectFail = 0 
+        end
+
         State.lastCycleMs = (os.clock() - t0) * 1000
         task.wait(State.collectInt)
     end
+end
+
+-- ============================================================
+--  AUTO SELL 1 DETIK SEKALI (TIMER SYSTEM)
+-- ============================================================
+local function startAutoSellTimer()
+    task.spawn(function()
+        while State.collectOn do
+            if State.sellOn then
+                pcall(function() 
+                    sellAllFishRemote:FireServer() 
+                    State.sellCnt += 1
+                end)
+            end
+            task.wait(1) -- ✅ Nembak Sell TIAP 1 DETIK
+        end
+    end)
 end
 
 -- ============================================================
@@ -341,7 +372,6 @@ local function boostFPS()
     FPS.active = true
     FPS.hidden = {}; FPS.materials = {}; FPS.sounds = {}; FPS.hiddenFolders = {}
     pcall(saveLighting)
-
     pcall(function()
         Lighting.GlobalShadows = false; Lighting.ShadowSoftness = 0
         Lighting.Brightness = 0.5; Lighting.Ambient = Color3.fromRGB(255,255,255)
@@ -350,7 +380,6 @@ local function boostFPS()
         Lighting.EnvironmentDiffuseScale = 0; Lighting.EnvironmentSpecularScale = 0
         Lighting.ExposureCompensation = 0; Lighting.ClockTime = 14
     end)
-
     for _, e in ipairs(Lighting:GetChildren()) do
         pcall(function()
             if e:IsA("PostEffect") or e:IsA("Atmosphere") or e:IsA("Sky") then
@@ -358,22 +387,18 @@ local function boostFPS()
             end
         end)
     end
-
     if Terrain then
         pcall(function()
             Terrain.WaterWaveSize = 0; Terrain.WaterWaveSpeed = 0
             Terrain.WaterReflectance = 0; Terrain.WaterTransparency = 1; Terrain.Decoration = false
         end)
     end
-
     pcall(function() UserSettings().GameSettings.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1 end)
     if Camera then pcall(function() Camera.FieldOfView = 70 end) end
-
     hideGameFolder()
     local char = player.Character
     for _, o in ipairs(workspace:GetDescendants()) do stripObject(o, char) end
     stripCharacter(char)
-
     for _, s in ipairs(workspace:GetDescendants()) do
         pcall(function() if s:IsA("Sound") and s.Playing then s.Playing = false; table.insert(FPS.sounds, s) end end)
     end
@@ -384,9 +409,7 @@ end
 local function unboostFPS()
     if not FPS.active then return false end
     FPS.active = false
-
     pcall(function() for k, v in pairs(FPS.origLighting) do pcall(function() Lighting[k] = v end) end end)
-
     if Terrain and FPS.origTerrain then
         pcall(function()
             local t = FPS.origTerrain
@@ -397,14 +420,12 @@ local function unboostFPS()
     end
     pcall(function() if FPS.origQuality then UserSettings().GameSettings.SavedQualityLevel = FPS.origQuality end end)
     if Camera and FPS.origFOV then pcall(function() Camera.FieldOfView = FPS.origFOV end) end
-
     for _, e in ipairs(FPS.hidden) do pcall(function() if e.obj and e.obj.Parent then e.obj[e.prop] = e.val end end) end
     FPS.hidden = {}
     for _, m in ipairs(FPS.materials) do pcall(function() if m.obj and m.obj.Parent then m.obj[m.prop] = m.val end end) end
     FPS.materials = {}
     for _, s in ipairs(FPS.sounds) do pcall(function() if s and s.Parent then s.Playing = true end end) end
     FPS.sounds = {}
-
     showGameFolder()
     restoreCoreGui()
     return true
@@ -475,7 +496,6 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.DisplayOrder = 999
 ScreenGui.Parent = player:WaitForChild("PlayerGui")
 
--- MAIN GUI
 local Main = Instance.new("Frame")
 Main.Size = UDim2.new(0, 340, 0, 0); Main.Position = UDim2.new(0, 20, 0, 20)
 Main.BackgroundColor3 = C.Bg; Main.BorderSizePixel = 0; Main.ClipsDescendants = true
@@ -484,7 +504,6 @@ Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 16)
 local ms = Instance.new("UIStroke", Main)
 ms.Color = C.Stroke; ms.Thickness = 1.5; ms.Transparency = 0.25
 
--- TOPBAR
 local TopBar = Instance.new("Frame")
 TopBar.Size = UDim2.new(1, 0, 0, 54); TopBar.BackgroundColor3 = C.Panel; TopBar.BorderSizePixel = 0; TopBar.Parent = Main
 Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0, 16)
@@ -497,7 +516,7 @@ Title.TextXAlignment = Enum.TextXAlignment.Left
 
 local Subtitle = Instance.new("TextLabel", TopBar)
 Subtitle.Size = UDim2.new(1, -100, 0, 14); Subtitle.Position = UDim2.new(0, 16, 0, 32)
-Subtitle.BackgroundTransparency = 1; Subtitle.Text = "Auto Feeder 5m Included"
+Subtitle.BackgroundTransparency = 1; Subtitle.Text = "Brutal Collect + 1s Auto-Sell"
 Subtitle.TextColor3 = C.Sub; Subtitle.Font = Enum.Font.GothamBold; Subtitle.TextSize = 10
 Subtitle.TextXAlignment = Enum.TextXAlignment.Left
 
@@ -513,16 +532,12 @@ MinBtn.BackgroundColor3 = C.Element; MinBtn.Text = "—"; MinBtn.TextColor3 = C.
 MinBtn.Font = Enum.Font.GothamBold; MinBtn.TextSize = 14; MinBtn.BorderSizePixel = 0; MinBtn.AutoButtonColor = false
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(1, 0)
 
--- BODY
 local Body = Instance.new("Frame")
 Body.Size = UDim2.new(1, -20, 0, 0); Body.Position = UDim2.new(0, 10, 0, 62)
 Body.BackgroundTransparency = 1; Body.Parent = Main
 local BodyLayout = Instance.new("UIListLayout", Body)
 BodyLayout.Padding = UDim.new(0, 8); BodyLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
--- ============================================================
---  SIMPLE ELEMENT CREATOR
--- ============================================================
 local order = 0
 local function nextOrder() order += 1; return order end
 
@@ -581,14 +596,17 @@ local function makeStatus(height)
 end
 
 -- ============================================================
---  ISI GUI (CUMA TOGGLE)
+--  ISI GUI
 -- ============================================================
 makeSection("Control Panel")
 
-local toggleCollect = makeToggle("Auto Collect & Insta-Sell", false, function(v)
+local toggleCollect = makeToggle("Auto Collect & Auto-Sell", false, function(v)
     State.collectOn = v
     State.sellOn = v 
-    if v then task.spawn(collectLoopBrutal) end
+    if v then 
+        task.spawn(collectLoopBrutal)
+        startAutoSellTimer() -- ✅ Nyalakan Timer 1 detik
+    end
 end)
 
 local toggleFeeder = makeToggle("Auto Place Feeder (5m)", false, function(v)
@@ -601,6 +619,11 @@ local toggleFoodTray = makeToggle("Auto Place Food Tray (1m)", false, function(v
     if v then startAutoFoodTrayLoop() end
 end)
 
+local toggleStormHorn = makeToggle("Auto Storm Horn (3m)", false, function(v)
+    State.stormHornOn = v
+    if v then startAutoStormHornLoop() end
+end)
+
 local toggleFPS = makeToggle("Ultra FPS Boost & Hide Fish", false, function(v)
     if v then 
         boostFPS() 
@@ -611,37 +634,36 @@ local toggleFPS = makeToggle("Ultra FPS Boost & Hide Fish", false, function(v)
     end
 end)
 
-local statusLabel = makeStatus(70)
+local statusLabel = makeStatus(85)
 
 -- ============================================================
---  AUTO ENABLE ALL TOGGLES ON EXECUTE  -- [BARU]
+--  AUTO ENABLE ALL TOGGLES ON EXECUTE
 -- ============================================================
 task.spawn(function()
-    task.wait(0.5) -- tunggu GUI siap
+    task.wait(0.5)
 
-    -- 1. Auto Collect & Insta-Sell
     toggleCollect.Set(true)
     State.collectOn = true
     State.sellOn = true
     task.spawn(collectLoopBrutal)
-
+    startAutoSellTimer() -- ✅ Nyalakan Timer 1 detik saat auto enable
     task.wait(0.1)
 
-    -- 2. Auto Place Feeder (5m)
     toggleFeeder.Set(true)
     State.feederOn = true
     startAutoFeederLoop()
-
     task.wait(0.1)
 
-    -- 3. Auto Place Food Tray (1m)
     toggleFoodTray.Set(true)
     State.foodTrayOn = true
     startAutoFoodTrayLoop()
-
     task.wait(0.1)
 
-    -- 4. Ultra FPS Boost & Hide Fish
+    toggleStormHorn.Set(true)
+    State.stormHornOn = true
+    startAutoStormHornLoop()
+    task.wait(0.1)
+
     toggleFPS.Set(true)
     boostFPS()
     hideFish()
@@ -665,10 +687,11 @@ end)
 task.spawn(function()
     while ScreenGui.Parent do
         statusLabel.Text = string.format(
-            "Collected: %d | Sold: %d\nFeeder: %s | FoodTray: %s | FPS Boost: %s",
+            "Collected: %d | Sold: %d\nFeeder: %s | FoodTray: %s\nStormHorn: %s | FPS Boost: %s",
             State.collectCnt, State.sellCnt,
             State.feederOn and "ACTIVE" or "OFF",
             State.foodTrayOn and "ACTIVE" or "OFF",
+            State.stormHornOn and "ACTIVE" or "OFF",
             FPS.active and "ON" or "OFF"
         )
         task.wait(0.4)
