@@ -1,5 +1,7 @@
 -- ============================================================
---  ULTRA FISH FARMER - BRUTAL + AUTO-SELL 1s EDITION
+--  ULTRA FISH FARMER - FINAL BRUTAL EDITION
+--  Rapid Fire Multi-Bait (5 UID per burst, parallel chunks)
+--  Token Bucket + Adaptive Ping Guard + Smart Sell
 --  + AUTO FEEDER 5M + FOOD TRAY 1M + STORM HORN 3M
 -- ============================================================
 
@@ -69,22 +71,37 @@ local function fetchCurrentPondBaits(onlyWithFish)
 end
 
 -- ============================================================
---  STATE
+--  STATE (FINAL BRUTAL)
 -- ============================================================
 local State = {
     collectOn    = false,
-    collectInt   = 0.1,   -- Jeda antar cycle (super cepat)
-    collectBurst = 2,     -- Burst per bait
-    burstLoop    = 2,     -- Loop burst
-    fireGap      = 0.05,  -- Jeda antar fire remote (kilat)
-    parallelOn   = true,  -- Multi-thread (brutal)
+    collectInt   = 0.05,
+    collectBurst = 3,
+    burstLoop    = 1,      -- chunk-based, tidak perlu burst loop
+    fireGap      = 0.08,
+    parallelOn   = true,
     collectCnt   = 0,
     collectFail  = 0,
     sellOn       = false,
     sellCnt      = 0,
     baitList     = {},
     lastCycleMs  = 0,
-    
+
+    -- ===== MULTI-BAIT RAPID FIRE =====
+    multiBaitEnabled = true,
+    multiBaitMin     = 1,
+    multiBaitMax     = 2,
+    multiBaitCount   = 2,     -- 5 UID per burst
+
+    -- ===== PING GUARD =====
+    maxConcurrent   = 4,      -- 4 chunk paralel
+    remoteBudget    = 50,     -- 30 remote/detik
+    remoteUsed      = 0,
+    lastBudgetReset = os.clock(),
+    pingMs          = 0,
+    adaptiveGap     = 0.05,
+    backoffUntil    = 0,
+
     feederOn     = false,
     foodTrayOn   = false,
     stormHornOn  = false,
@@ -119,24 +136,74 @@ end
 task.spawn(startAntiAfk)
 
 -- ============================================================
+--  TOKEN BUCKET + PING GUARD
+-- ============================================================
+local function resetBudgetIfNeeded()
+    local now = os.clock()
+    if now - State.lastBudgetReset >= 1 then
+        State.remoteUsed = 0
+        State.lastBudgetReset = now
+    end
+end
+
+local function canFire()
+    resetBudgetIfNeeded()
+    return State.remoteUsed < State.remoteBudget and os.clock() >= State.backoffUntil
+end
+
+local function consumeToken(n)
+    State.remoteUsed += (n or 1)
+end
+
+-- ============================================================
+--  MULTI-BAIT RAPID FIRE CORE
+--  Server: FireServer(uid_string) per UID
+--  Multi-bait: rapid fire 3-5 UID dalam 1 frame
+-- ============================================================
+local function fireMultiBait(baitIds)
+    local success = 0
+    for _, baitId in ipairs(baitIds) do
+        local ok = pcall(function()
+            collectAllFishRemote:FireServer(tostring(baitId))
+        end)
+        if ok then success += 1 end
+        -- Tidak ada task.wait — rapid dalam 1 frame
+    end
+    return success > 0, success
+end
+
+local function buildBaitChunks(baits)
+    local chunks = {}
+    local n = math.clamp(State.multiBaitCount, State.multiBaitMin, State.multiBaitMax)
+    local i = 1
+    while i <= #baits do
+        local chunk = {}
+        for j = i, math.min(i + n - 1, #baits) do
+            table.insert(chunk, baits[j].id)
+        end
+        table.insert(chunks, chunk)
+        i += n
+    end
+    return chunks
+end
+
+-- ============================================================
 --  AUTO PLACE FEEDER (5 MENIT LOOP)
 -- ============================================================
 local function startAutoFeederLoop()
     task.spawn(function()
         while State.feederOn do
-            for i = 1, 10 do
-                if not State.feederOn then break end
-                pcall(function()
-                    placeBuildingRemote:InvokeServer("booster", "GodlyAutoFeeder", Vector3.new(75.86299896240234, -0.012000083923339844, 41))
-                end)
-                task.wait(0.1)
-            end
-            for i = 1, 10 do
-                if not State.feederOn then break end
-                pcall(function()
-                    placeBuildingRemote:InvokeServer("booster", "GodlyAutoFeeder", Vector3.new(75.86299896240234, -0.012000083923339844, -41))
-                end)
-                task.wait(0.1)
+            for _, pos in ipairs({
+                Vector3.new(75.86299896240234, -0.012000083923339844, 41),
+                Vector3.new(75.86299896240234, -0.012000083923339844, -41),
+            }) do
+                for i = 1, 3 do
+                    if not State.feederOn then break end
+                    pcall(function()
+                        placeBuildingRemote:InvokeServer("booster", "GodlyAutoFeeder", pos)
+                    end)
+                    task.wait(0.25)
+                end
             end
             if State.feederOn then task.wait(300) end
         end
@@ -163,7 +230,7 @@ end
 local function startAutoStormHornLoop()
     task.spawn(function()
         while State.stormHornOn do
-            if stormHornRemote then
+            if stormHornRemote and stormHornRemote:IsA("RemoteEvent") then
                 pcall(function()
                     stormHornRemote:FireServer("StormHorn")
                 end)
@@ -174,28 +241,45 @@ local function startAutoStormHornLoop()
 end
 
 -- ============================================================
---  COLLECT BRUTAL MURNI (TANPA JEDA SELL DI DALAM)
+--  COLLECT BRUTAL — RAPID FIRE CHUNKS
 -- ============================================================
-local function fireBaitBrutal(baitId)
-    for l = 1, State.burstLoop do
-        if not State.collectOn then break end
-        for b = 1, State.collectBurst do
-            if not State.collectOn then break end
-            
-            local ok = pcall(function()
-                collectAllFishRemote:FireServer(baitId)
-            end)
-            if ok then
-                State.collectCnt += 1
-                State.collectFail = math.max(0, State.collectFail - 1)
-            else
-                State.collectFail += 1
-            end
-            
-            task.wait(State.fireGap)
-        end
-        task.wait(0.01)
+local function fireChunkBrutal(chunk)
+    if type(chunk) ~= "table" or #chunk == 0 then return end
+    if not State.collectOn then return end
+
+    local cost = #chunk
+    local guard = 0
+    while (State.remoteUsed + cost > State.remoteBudget or os.clock() < State.backoffUntil)
+          and State.collectOn and guard < 50 do
+        resetBudgetIfNeeded()
+        task.wait(0.02); guard += 1
     end
+    if not State.collectOn then return end
+
+    consumeToken(cost)
+
+    local t0 = os.clock()
+    local ok, sent = fireMultiBait(chunk)
+    local ms = (os.clock() - t0) * 1000
+
+    State.pingMs = State.pingMs == 0 and ms or (State.pingMs * 0.7 + ms * 0.3)
+    if State.pingMs > 150 then
+        State.adaptiveGap = math.min(0.25, State.adaptiveGap + 0.01)
+        State.remoteBudget = math.max(10, State.remoteBudget - 1)
+    elseif State.pingMs < 80 then
+        State.adaptiveGap = math.max(0.03, State.adaptiveGap - 0.005)
+        State.remoteBudget = math.min(40, State.remoteBudget + 2)
+    end
+
+    if ok then
+        State.collectCnt += sent
+        State.collectFail = math.max(0, State.collectFail - 1)
+    else
+        State.collectFail += 1
+        State.backoffUntil = os.clock() + 0.3
+    end
+
+    task.wait(State.adaptiveGap)
 end
 
 local function collectLoopBrutal()
@@ -205,39 +289,68 @@ local function collectLoopBrutal()
         State.baitList = baits
 
         if #baits == 0 then
-            task.wait(0.5)
-        elseif State.parallelOn then
-            local threads = {}
-            for _, b in ipairs(baits) do
-                if not State.collectOn then break end
-                threads[#threads + 1] = task.spawn(function()
-                    fireBaitBrutal(b.id)
-                end)
-                task.wait(0.005)
-            end
-            local waited = 0
-            while waited < 3 do
-                local alive = false
-                for _, th in ipairs(threads) do
-                    if coroutine.status(th) ~= "dead" then alive = true; break end
+            task.wait(0.3)
+        elseif State.multiBaitEnabled then
+            local chunks = buildBaitChunks(baits)
+
+            if State.parallelOn then
+                local i = 1
+                while i <= #chunks and State.collectOn do
+                    local threads = {}
+                    local batchEnd = math.min(i + State.maxConcurrent - 1, #chunks)
+                    for j = i, batchEnd do
+                        if not State.collectOn then break end
+                        local chunk = chunks[j]
+                        threads[#threads + 1] = task.spawn(function()
+                            fireChunkBrutal(chunk)
+                        end)
+                    end
+
+                    local waited = 0
+                    while waited < 2 and State.collectOn do
+                        local alive = false
+                        for _, th in ipairs(threads) do
+                            if coroutine.status(th) ~= "dead" then alive = true; break end
+                        end
+                        if not alive then break end
+                        task.wait(0.02); waited += 0.02
+                    end
+
+                    i = batchEnd + 1
                 end
-                if not alive then break end
-                task.wait(0.02)
-                waited += 0.02
+            else
+                for _, chunk in ipairs(chunks) do
+                    if not State.collectOn then break end
+                    fireChunkBrutal(chunk)
+                end
             end
         else
             for _, b in ipairs(baits) do
                 if not State.collectOn then break end
-                fireBaitBrutal(b.id)
-                task.wait(0.005)
+                local guard = 0
+                while not canFire() and State.collectOn and guard < 50 do
+                    task.wait(0.02); guard += 1
+                end
+                if not State.collectOn then break end
+                consumeToken(1)
+                local ok = pcall(function()
+                    collectAllFishRemote:FireServer(tostring(b.id))
+                end)
+                if ok then
+                    State.collectCnt += 1
+                    State.collectFail = math.max(0, State.collectFail - 1)
+                else
+                    State.collectFail += 1
+                    State.backoffUntil = os.clock() + 0.3
+                end
+                task.wait(State.adaptiveGap)
             end
         end
 
-        -- ✅ ANTI-MACET: Paksa sell kalau gagal collect berkali-kali
         if State.sellOn and State.collectFail >= 3 then
             pcall(function() sellAllFishRemote:FireServer() end)
             State.sellCnt += 1
-            State.collectFail = 0 
+            State.collectFail = 0
         end
 
         State.lastCycleMs = (os.clock() - t0) * 1000
@@ -246,18 +359,20 @@ local function collectLoopBrutal()
 end
 
 -- ============================================================
---  AUTO SELL 1 DETIK SEKALI (TIMER SYSTEM)
+--  SMART AUTO SELL
 -- ============================================================
 local function startAutoSellTimer()
     task.spawn(function()
+        local lastSellAtCount = -1
         while State.collectOn do
-            if State.sellOn then
-                pcall(function() 
-                    sellAllFishRemote:FireServer() 
+            if State.sellOn and State.collectCnt ~= lastSellAtCount then
+                pcall(function()
+                    sellAllFishRemote:FireServer()
                     State.sellCnt += 1
                 end)
+                lastSellAtCount = State.collectCnt
             end
-            task.wait(1) -- ✅ Nembak Sell TIAP 1 DETIK
+            task.wait(1)
         end
     end)
 end
@@ -276,7 +391,7 @@ local Camera = workspace.CurrentCamera
 local function saveLighting()
     FPS.origLighting = {
         GlobalShadows = Lighting.GlobalShadows, ShadowSoftness = Lighting.ShadowSoftness,
-        Brightness = Lighting.Brightness, Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient, 
+        Brightness = Lighting.Brightness, Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient,
         FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart, FogColor = Lighting.FogColor,
         EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale, EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale,
         ExposureCompensation = Lighting.ExposureCompensation, ClockTime = Lighting.ClockTime,
@@ -441,7 +556,7 @@ local function isFishModel(obj)
     local pName = obj.Parent.Name:lower()
     if not pName:find("pond") then return false end
     local n = obj.Name:lower()
-    if n == "sardine" or n == "cod" or n == "salmon" or n:find("_gold") or n:find("_silver") 
+    if n == "sardine" or n == "cod" or n == "salmon" or n:find("_gold") or n:find("_silver")
        or n:find("_diamond") or n:find("_radiant") or n:find("_huge") or n:find("_tiny") or n:find("fish") then
         return true
     end
@@ -516,7 +631,7 @@ Title.TextXAlignment = Enum.TextXAlignment.Left
 
 local Subtitle = Instance.new("TextLabel", TopBar)
 Subtitle.Size = UDim2.new(1, -100, 0, 14); Subtitle.Position = UDim2.new(0, 16, 0, 32)
-Subtitle.BackgroundTransparency = 1; Subtitle.Text = "Brutal Collect + 1s Auto-Sell"
+Subtitle.BackgroundTransparency = 1; Subtitle.Text = "Rapid Fire x5 UID + Ping Safe"
 Subtitle.TextColor3 = C.Sub; Subtitle.Font = Enum.Font.GothamBold; Subtitle.TextSize = 10
 Subtitle.TextXAlignment = Enum.TextXAlignment.Left
 
@@ -602,11 +717,15 @@ makeSection("Control Panel")
 
 local toggleCollect = makeToggle("Auto Collect & Auto-Sell", false, function(v)
     State.collectOn = v
-    State.sellOn = v 
-    if v then 
+    State.sellOn = v
+    if v then
         task.spawn(collectLoopBrutal)
-        startAutoSellTimer() -- ✅ Nyalakan Timer 1 detik
+        startAutoSellTimer()
     end
+end)
+
+local toggleMulti = makeToggle("Multi-Bait Rapid (x5 UID)", true, function(v)
+    State.multiBaitEnabled = v
 end)
 
 local toggleFeeder = makeToggle("Auto Place Feeder (5m)", false, function(v)
@@ -625,16 +744,16 @@ local toggleStormHorn = makeToggle("Auto Storm Horn (3m)", false, function(v)
 end)
 
 local toggleFPS = makeToggle("Ultra FPS Boost & Hide Fish", false, function(v)
-    if v then 
-        boostFPS() 
+    if v then
+        boostFPS()
         hideFish()
-    else 
-        unboostFPS() 
+    else
+        unboostFPS()
         showFish()
     end
 end)
 
-local statusLabel = makeStatus(85)
+local statusLabel = makeStatus(120)
 
 -- ============================================================
 --  AUTO ENABLE ALL TOGGLES ON EXECUTE
@@ -646,7 +765,11 @@ task.spawn(function()
     State.collectOn = true
     State.sellOn = true
     task.spawn(collectLoopBrutal)
-    startAutoSellTimer() -- ✅ Nyalakan Timer 1 detik saat auto enable
+    startAutoSellTimer()
+    task.wait(0.1)
+
+    toggleMulti.Set(true)
+    State.multiBaitEnabled = true
     task.wait(0.1)
 
     toggleFeeder.Set(true)
@@ -687,8 +810,12 @@ end)
 task.spawn(function()
     while ScreenGui.Parent do
         statusLabel.Text = string.format(
-            "Collected: %d | Sold: %d\nFeeder: %s | FoodTray: %s\nStormHorn: %s | FPS Boost: %s",
+            "Collected: %d | Sold: %d\nMulti-Bait: %s (%d UID/burst)\nPing: %.0fms | Budget: %d/s | Gap: %.2fs\nBackoff: %s\nFeeder: %s | FoodTray: %s\nStormHorn: %s | FPS: %s",
             State.collectCnt, State.sellCnt,
+            State.multiBaitEnabled and "ON" or "OFF",
+            State.multiBaitCount,
+            State.pingMs, State.remoteBudget, State.adaptiveGap,
+            (os.clock() < State.backoffUntil) and "YES" or "no",
             State.feederOn and "ACTIVE" or "OFF",
             State.foodTrayOn and "ACTIVE" or "OFF",
             State.stormHornOn and "ACTIVE" or "OFF",
